@@ -38,9 +38,6 @@ def get_cost(costs, i, j, nodes_mapping):
 def solve_orienteering(costs, rewards, start_and_end, max_cost):
     nodes_mapping = {i: n for i, n in enumerate(rewards.node, 1)}
 
-    # Adds end node
-    # nodes_mapping[len(nodes_mapping) + 1] = start_and_end
-
     # Rewards dict
     s_i = {
         i:
@@ -133,13 +130,19 @@ def solve_orienteering(costs, rewards, start_and_end, max_cost):
     # Maximization
     solver.Maximize(sum(s_i[i] * x_ij[i][j] for i,j in product(indexes, indexes)))
 
-    status = solver.Solve()
-    if status == pywraplp.Solver.OPTIMAL:
-        print("Optimal")
-        for i,j in product(indexes, indexes):
-            print(nodes_mapping[i],nodes_mapping[j], x_ij[i][j].solution_value())
-        print(solver.Objective().Value())
-    return
+    def cost(t_ij, x_ij):
+        return sum(t_ij[i][j] * x_ij[i][j] for i,j in product(index_1_N_1, index_2_N))
+    
+    def real_cost(t_ij, x_ij):
+        x_ij = {i: {j: x_ij[i][j].solution_value() for j in x_ij[i]} for i in x_ij}
+        return cost(t_ij, x_ij)
+    # status = solver.Solve()
+    # if status == pywraplp.Solver.OPTIMAL:
+    #     print("Optimal")
+    #     for i,j in product(indexes, indexes):
+    #         print(nodes_mapping[i],nodes_mapping[j], x_ij[i][j].solution_value())
+    #     print(solver.Objective().Value())
+    # return
 
     # if status == pywraplp.Solver.OPTIMAL:
     #     print("Optimal")
