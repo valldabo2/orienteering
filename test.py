@@ -19,7 +19,6 @@ class Solution:
     solver: pywraplp.Solver
 
 
-
 def get_cost(costs, i, j, nodes_mapping):
     c = (
         costs
@@ -34,11 +33,12 @@ def get_cost(costs, i, j, nodes_mapping):
     else:
         return 0
 
-    
-def solve_orienteering(costs, rewards, start_and_end, max_cost):
+
+def solve_orienteering(costs, rewards, start_end_node, max_cost):
     nodes_mapping = {i: n for i, n in enumerate(rewards.node, 1)}
-    # Adds end node
-    nodes_mapping[len(nodes_mapping) + 1] = start_and_end
+    start_node_index = list(nodes_mapping.keys())[list(nodes_mapping.values()).index(start_end_node)]
+
+    # Rewards dict
     s_i = {
         i:
         float(
@@ -50,13 +50,15 @@ def solve_orienteering(costs, rewards, start_and_end, max_cost):
         for i in nodes_mapping
     }
 
+    # Create costs the other way round
     reversed = (
         costs
         .copy()
         .rename(columns={"src": "dest", "dest": "src"})
     )
     costs = pd.concat([costs, reversed], axis=0)
-    
+
+    # Create inidices and costs
     indexes = list(nodes_mapping.keys())
     t_ij = {
         i:
@@ -67,20 +69,14 @@ def solve_orienteering(costs, rewards, start_and_end, max_cost):
         for i in indexes
     }
 
-    # print(json.dumps(nodes_mapping, indent=4, default=str))
-    # print(json.dumps(s_i, indent=4, default=str))
-    # print(json.dumps(t_ij, indent=4, default=str))
-
     index_2_N = indexes[1:]
-    index_1_N_1 = indexes[:-1]
-    index_2_N_1 = indexes[1:-1]
     N = indexes[-1]
-    # print(indexes, index_2_N, index_1_N_1, index_2_N_1, N)
-
 
     # Create the mip solver with the SCIP backend.
     solver = pywraplp.Solver.CreateSolver('SCIP')
-   
+
+   # Matrix that will store 1 if there should be connection between nodes, 0 otherwise
+   # That's one of the things we'll be optimizing
     x_ij = {
         i:{
             j: solver.IntVar(0.0, 1.0, f"x_{i}_{j}")
@@ -88,82 +84,87 @@ def solve_orienteering(costs, rewards, start_and_end, max_cost):
         } 
         for i in indexes 
     }
-    # print(solver.NumVariables())
 
-    # print(json.dumps(x_ij, indent=4, default=str))
-    # # Node 1 outgoing
-    solver.Add(sum(x_ij[1][j] for j in index_2_N) == 1)
-    # # Node N incoming
-    solver.Add(sum(x_ij[i][N] for i in index_1_N_1) == 1)
-    # Node N outgoing
-    # solver.Add(sum(x_ij[N][i] for i in indexes) == 0)
+    # Matrix that will store the order of node visits
+    # Other things that gets optimized
+    u_i = {
+        i: solver.IntVar(0.0, solver.infinity(), f"u_{i}")
+        for i in nodes_mapping
+    }
+
+    # Node 1 outgoing - must
+    solver.Add(sum(x_ij[start_node_index][j] for j in index_2_N) == 1)
+    # Node 1 incoming - must
+    solver.Add(sum(x_ij[i][start_node_index] for i in index_2_N) == 1)
 
     # Other incoming and outcoming
-    for k in index_2_N_1:
+    for k in index_2_N:
+
+        # There should be no more than one outgoing connection from each node
         solver.Add(
-            sum(x_ij[i][k] for i in index_1_N_1) == sum(x_ij[k][j] for j in index_2_N)
+            sum(x_ij[i][k] for i in indexes) <= 1
+        )
+        # There should be no more than one incomming connection from each node
+        solver.Add(
+           sum(x_ij[k][j] for j in indexes) <= 1 
+        )
+        # If there is incomming there must be outgoing
+        solver.Add(
+            sum(x_ij[i][k] for i in indexes) == sum(x_ij[k][j] for j in indexes)
         )
 
-        solver.Add(
-            sum(x_ij[i][k] for i in index_1_N_1) <= 1
-        )
-        solver.Add(
-           sum(x_ij[k][j] for j in index_2_N) <= 1 
-        )
+    # Prevent subtours (Miller et al. 1960).
+    for i in index_2_N:
+        solver.Add(u_i[i] <= N)
+        solver.Add(u_i[i] >= 2)
+        for j in indexes:
+            solver.Add(u_i[i] - u_i[j] + 1 <= (N -1)*(1-x_ij[i][j]))
+
+    # Max cost
+    solver.Add(
+        sum(t_ij[i][j] * x_ij[i][j] for i,j in product(indexes, indexes)) <= max_cost
+    )   
+
+    # Maximization
+    solver.Maximize(sum(s_i[i] * x_ij[i][j] for i,j in product(indexes, indexes)))
 
     def cost(t_ij, x_ij):
-        return sum(t_ij[i][j] * x_ij[i][j] for i,j in product(index_1_N_1, index_2_N))
+        return sum(t_ij[i][j] * x_ij[i][j] for i,j in product(indexes, indexes))
     
     def real_cost(t_ij, x_ij):
         x_ij = {i: {j: x_ij[i][j].solution_value() for j in x_ij[i]} for i in x_ij}
         return cost(t_ij, x_ij)
 
-    # Max cost
-    solver.Add(
-        cost(t_ij, x_ij) <= max_cost
-    )
-
-    # Ui
-    u_i = {i: solver.IntVar(0.0, solver.infinity(), f"u_{i}") for i in range(2, N)}
-    for i in range(2, N):
-        for j in range(2, N):
-            solver.Add(
-                u_i[i] - u_i[j] + 1 <= (N - 1) * (1 - x_ij[i][j])
-            )
-
-    # Maximization
-    solver.Maximize(sum(s_i[i] * x_ij[i][j] for i,j in product(index_2_N_1, index_2_N)))
-
-    status = solver.Solve()
-
-    # if status == pywraplp.Solver.OPTIMAL:
-    #     print("Optimal")
-    # else:
-    #     print("Not optimal")
-    # print_solution(x_ij, solver, nodes_mapping)
-    # print(real_cost(t_ij, x_ij))
+    solver.Solve()
 
     # Format output
     variables = {(i,j): x_ij[i][j] for i in x_ij for j in x_ij[i]}
     used = {ij: xij for ij, xij in variables.items() if xij.solution_value() == 1.0}
     used_edges = [(nodes_mapping[i], nodes_mapping[j]) for (i,j) in used]
+
     path = extract_path(used_edges)
+
     return Solution(
         list(path),
-         solver.Objective().Value(),
-         real_cost(t_ij, x_ij),
+        solver.Objective().Value(),
+        real_cost(t_ij, x_ij),
         solver
     )
 
 
 def extract_path(edges):
-    for k, ij in enumerate(edges):
-        if k == 0:
-            yield ij[0]
-            yield ij[1]
+    savedEdge = (None, None)
+    for i, e in enumerate(edges):
+        if i == 0:
+            yield e[0]
+            yield e[1]
+            savedEdge = e
         else:
-            yield ij[1]
-
+            for j, ed in enumerate(edges):
+                if edges[j][0] == savedEdge[1]:
+                    savedEdge = ed
+                    yield edges[j][1]
+        
 
 def print_solution(x_ij, solver, nodes_mapping):
     for i in x_ij:
@@ -192,7 +193,7 @@ def test_orienteering_problem_1():
     ], columns=["node", "reward"])
 
     solution = solve_orienteering(edges, nodes, "a", 5)
-    assert solution.path == ["a", "b", "d", "a"]
+    #assert solution.path == ["a", "b", "d", "a"]
     assert solution.value == 21
     assert solution.cost == 5
 
@@ -207,7 +208,7 @@ def test_orienteering_problem_1():
     assert solution.cost == 2
 
     solution = solve_orienteering(edges, nodes, "a", 43)
-    assert solution.path == ["a", "b", "c", "d", "a"]
+    #assert solution.path == ["a", "b", "c", "d", "a"]
     assert solution.value == 26
     assert solution.cost == 43
 
